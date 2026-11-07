@@ -1,0 +1,6 @@
+# Exact versions used by the GitHub build. Each was released at least two weeks
+# before it was pinned here; bump them on purpose, not by accident.
+PySide6==6.12.0
+pillow==13.0.0
+pillow-heif==1.8.1
+pyinstaller==6.22.3
