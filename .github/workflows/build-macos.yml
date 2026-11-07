@@ -1,0 +1,99 @@
+# Builds ScanStack.app for Apple silicon Macs on GitHub's own Mac machines.
+#
+# Runs when you push changes to main, when you push a version tag (v1.0.1 etc.),
+# or when you press "Run workflow" on the Actions tab.
+# The .dmg appears under the run's Artifacts. Version tags also publish a Release.
+#
+# Safety notes:
+# - Only GitHub's official actions are used, each pinned to an exact commit.
+# - Python packages are pinned in packaging/macos/requirements-build.txt.
+# - No passwords or secrets are used anywhere in this build.
+
+name: Build macOS app
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore:
+      - "**.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ScanStack for Apple silicon
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: write       # only used to publish a Release when you push a version tag
+      id-token: write       # build attestation (public repos)
+      attestations: write
+
+    steps:
+      - name: Get the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r packaging/macos/requirements-build.txt
+
+      - name: Work out the version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="$(tr -d '[:space:]' < VERSION)"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Build ScanStack.app and .dmg
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: bash packaging/macos/build.sh
+
+      - name: Record where this build came from (public repos only)
+        if: ${{ !github.event.repository.private }}
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/ScanStack-*.dmg
+
+      - name: Upload the .dmg
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ScanStack-${{ steps.version.outputs.version }}-macOS
+          path: |
+            dist/ScanStack-*.dmg
+            dist/ScanStack-*.dmg.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish a Release (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=(dist/ScanStack-*.dmg dist/ScanStack-*.dmg.sha256)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+              --title "ScanStack $GITHUB_REF_NAME" --generate-notes
+          fi
